@@ -285,7 +285,15 @@ main{flex:1;width:100%;max-width:1240px;margin:0 auto;padding:8px 18px 30px}
 .card-more:hover{background:var(--accent);border-color:var(--accent);color:#fff;transform:rotate(90deg);opacity:1}
 .card-more svg{width:15px;height:15px}
 /* 拖拽中的卡片 */
-.card.dragging .card-shell{transform:scale(.95);opacity:.45;box-shadow:none}
+.card.dragging .card-shell{transform:scale(1.05);opacity:.95;box-shadow:0 18px 36px rgba(0,0,0,.18)}
+.card.dragging{transition:none!important}
+.grid.dragging .card{transition:none!important}
+.card-swap{transition:transform .25s cubic-bezier(.22,.8,.3,1)!important}
+.drop-placeholder{border:2px dashed var(--accent);border-radius:var(--radius-lg);background:color-mix(in srgb,var(--accent) 10%,transparent);pointer-events:none;transition:all .28s cubic-bezier(.22,.8,.3,1)}
+.drop-placeholder[data-w="1"][data-h="1"]{grid-column:span 1;grid-row:span 1}
+.drop-placeholder[data-w="1"][data-h="2"]{grid-column:span 1;grid-row:span 2}
+.drop-placeholder[data-w="2"][data-h="1"]{grid-column:span 2;grid-row:span 1}
+.drop-placeholder[data-w="2"][data-h="2"]{grid-column:span 2;grid-row:span 2}
 /* 手柄/键盘焦点 */
 .card.gpfocus .card-shell{outline:3px solid var(--accent);outline-offset:3px;transform:translateY(-2px)}
 /* 空状态 */
@@ -936,11 +944,6 @@ input[type=range]:disabled{opacity:.45;pointer-events:none}
           <div class="drop-list" id="historyList"></div>
           <button class="drop-clear" id="historyClear" hidden>清空全部记录</button>
         </div>
-      </div>
-      <div class="search-tips">
-        <span>按 / 或 Ctrl+K 快速聚焦搜索</span>
-        <span>上次使用的引擎会一直记住</span>
-        <span>最多滚动保存 15 条记录</span>
       </div>
       <div class="daily-quote">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/></svg>
@@ -2069,91 +2072,110 @@ function armReorder(sc, ev){
   if (!card) return;
   card.classList.add("dragging");
   $("#grid").classList.add("dragging");
-  const ghost = document.createElement("div");
-  ghost.className = "drag-ghost";
-  const shell = $(".card-shell", card).cloneNode(true);
-  shell.querySelectorAll(".card-tip").forEach(n => n.remove());
-  ghost.appendChild(shell);
-  ghost.style.width = card.offsetWidth + "px";
-  ghost.style.height = card.offsetHeight + "px";
-  document.body.appendChild(ghost);
-  dragState.ghost = ghost;
+  dragState.ghost = card;
+  dragState.startRect = card.getBoundingClientRect();
+  dragState.lastIdx = -1;
+  dragState.lastX = ev.clientX;
+  dragState.overId = null;
+  /* 创建占位符，留在原位显示虚线框 */
+  const ph = document.createElement("div");
+  ph.className = "drop-placeholder";
+  ph.dataset.w = sc.w || 1;
+  ph.dataset.h = sc.h || 1;
+  card.parentNode.insertBefore(ph, card.nextSibling);
+  dragState.ph = ph;
+  card.style.position = "fixed";
+  card.style.zIndex = "1000";
+  card.style.margin = "0";
   updateGhost(ev);
-  rebuildOverlay();
+  /* 窗口失焦时强制结束拖拽，防止占位符残留 */
+  window.addEventListener("blur", endReorder);
 }
 function updateGhost(ev){
   const g = dragState && dragState.ghost;
-  if (!g) return;
-  g.style.left = (ev.clientX - g.offsetWidth / 2) + "px";
-  g.style.top = (ev.clientY - g.offsetHeight / 2) + "px";
-}
-function pointerCell(ev){
-  const grid = $("#grid");
-  const rect = grid.getBoundingClientRect();
-  const cellW = (rect.width - (gridCols - 1) * GAP) / gridCols;
-  const cellH = cellW;
-  const r = Math.floor((ev.clientY - rect.top) / (cellH + GAP));
-  const c = Math.floor((ev.clientX - rect.left) / (cellW + GAP));
-  if (r < 0 || c < 0) return null;
-  const rows = simulateLayout(state.shortcuts, gridCols).rows;
-  if (r >= rows) return { r: Math.max(0, rows - 1), c: gridCols - 1 };
-  return { r, c: clamp(c, 0, gridCols - 1) };
+  if (!g || !dragState.startRect) return;
+  const r = dragState.startRect;
+  g.style.left = (ev.clientX - r.width / 2) + "px";
+  g.style.top = (ev.clientY - r.height / 2) + "px";
+  g.style.width = r.width + "px";
+  g.style.height = r.height + "px";
 }
 function moveReorder(ev){
   if (!dragState || !dragState.ghost) return;
   updateGhost(ev);
-  const cell = pointerCell(ev);
-  if (!cell) return;
-  const byId = {}; state.shortcuts.forEach(s => byId[s.id] = s);
-  const order = state.shortcuts.map(s => s.id);
-  const dragIdx = order.indexOf(dragState.id);
-  const rest = order.filter(id => id !== dragState.id);
-  /* 拖拽物自身当前占位 */
-  const selfSim = simulateLayout(state.shortcuts, gridCols);
-  const selfPos = selfSim.pos.find(p => p.id === dragState.id);
-  if (selfPos && cell.r >= selfPos.r && cell.r < selfPos.r + selfPos.ch && cell.c >= selfPos.c && cell.c < selfPos.c + selfPos.cw) {
-    return;
-  }
-  const restSim = simulateLayout(rest.map(id => byId[id]), gridCols).pos;
-  let insertAt = rest.length;
-  for (let i = 0; i < rest.length; i++) {
-    const p = restSim[i];
-    if (cell.r >= p.r && cell.r < p.r + p.ch && cell.c >= p.c && cell.c < p.c + p.cw) { insertAt = i; break; }
-    if (p.r > cell.r || (p.r === cell.r && p.c > cell.c)) { insertAt = i; break; }
-  }
-  const newOrder = rest.slice(0, insertAt).concat([dragState.id], rest.slice(insertAt));
-  if (newOrder.join() !== order.join()) {
-    state.shortcuts = newOrder.map(id => byId[id]);
-    saveState();
-    applyOrder(true);
-    rebuildOverlay();
-  }
-}
-function rebuildOverlay(){
-  const ov = $("#gridOverlay");
-  if (!ov) return;
-  ov.innerHTML = "";
-  const sim = simulateLayout(state.shortcuts, gridCols);
-  const occupied = {};
-  sim.pos.forEach(p => { for (let rr = p.r; rr < p.r + p.ch; rr++) for (let cc = p.c; cc < p.c + p.cw; cc++) occupied[rr + "," + cc] = p.id; });
-  let dpos = null;
-  if (dragState) dpos = sim.pos.find(p => p.id === dragState.id);
-  for (let r = 0; r < sim.rows; r++) {
-    for (let c = 0; c < gridCols; c++) {
-      const cell = document.createElement("div");
-      cell.className = "gcell";
-      cell.style.gridColumn = (c + 1) + " / span 1";
-      cell.style.gridRow = (r + 1) + " / span 1";
-      if (dpos && r >= dpos.r && r < dpos.r + dpos.ch && c >= dpos.c && c < dpos.c + dpos.cw) cell.classList.add("target");
-      ov.appendChild(cell);
+  const dragId = dragState.id;
+  const dx = ev.clientX - (dragState.lastX || ev.clientX);
+  dragState.lastX = ev.clientX;
+  for (let i = 0; i < state.shortcuts.length; i++) {
+    const s = state.shortcuts[i];
+    if (s.id === dragId) continue;
+    const n = cardNodes[s.id];
+    if (!n) continue;
+    const r = n.getBoundingClientRect();
+    if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
+      /* 目标位置：向右拖放在卡片后，向左拖放在卡片前 */
+      const targetIdx = dx >= 0 ? i + 1 : i;
+      const dragArrIdx = state.shortcuts.findIndex(x => x.id === dragId);
+      if (dragArrIdx === targetIdx) return;
+      /* 记录位置做动画 */
+      const before = {};
+      state.shortcuts.forEach(x => {
+        if (x.id === dragId) return;
+        const nd = cardNodes[x.id];
+        if (nd) { const br = nd.getBoundingClientRect(); before[x.id] = {l: br.left, t: br.top}; }
+      });
+      const [item] = state.shortcuts.splice(dragArrIdx, 1);
+      let insertPos = state.shortcuts.findIndex(x => x.id === s.id);
+      if (dx >= 0) insertPos += 1;
+      state.shortcuts.splice(insertPos, 0, item);
+      if (dragState.ph) {
+        const refNode = cardNodes[state.shortcuts[insertPos - 1] && state.shortcuts[insertPos - 1].id !== dragId ? state.shortcuts[insertPos - 1].id : s.id];
+        if (dx >= 0) {
+          if (refNode && refNode.nextSibling) refNode.parentNode.insertBefore(dragState.ph, refNode.nextSibling);
+          else if (refNode) refNode.parentNode.appendChild(dragState.ph);
+        } else {
+          n.parentNode.insertBefore(dragState.ph, n);
+        }
+      }
+      requestAnimationFrame(() => {
+        state.shortcuts.forEach(x => {
+          if (x.id === dragId || !before[x.id]) return;
+          const nd = cardNodes[x.id];
+          const now = nd.getBoundingClientRect();
+          const ddx = before[x.id].l - now.left, ddy = before[x.id].t - now.top;
+          if (ddx || ddy) {
+            nd.style.transition = "none";
+            nd.style.transform = "translate(" + ddx + "px," + ddy + "px)";
+            void nd.offsetWidth;
+            nd.style.transition = "transform .28s cubic-bezier(.22,.8,.3,1)";
+            nd.style.transform = "";
+          }
+        });
+      });
+      return;
     }
   }
 }
+function rebuildOverlay(){}
 function endReorder(){
   if (!dragState) return;
-  if (dragState.ghost) dragState.ghost.remove();
+  window.removeEventListener("blur", endReorder);
   const card = cardNodes[dragState.id];
-  if (card) card.classList.remove("dragging");
+  if (card) {
+    card.classList.remove("dragging");
+    card.style.position = "";
+    card.style.zIndex = "";
+    card.style.margin = "";
+    card.style.left = "";
+    card.style.top = "";
+    card.style.width = "";
+    card.style.height = "";
+    /* 把卡片移到占位符的位置，让它落在正确的网格格子里 */
+    if (dragState.ph && dragState.ph.parentNode) {
+      dragState.ph.parentNode.insertBefore(card, dragState.ph);
+    }
+  }
+  if (dragState.ph) dragState.ph.remove();
   $("#grid").classList.remove("dragging");
   $("#gridOverlay").innerHTML = "";
   saveState();
@@ -4144,6 +4166,17 @@ function executeCommand(cmd, parts){
       saveState(); renderHistoryDropdown();
       return { icon: "clock", label: "搜索记录条数设为 " + n };
     }
+    if (cmd === "open-shortcut") {
+      const name = parts.join(":");
+      const sc = state.shortcuts.find(s => s.name.includes(name)) || state.shortcuts.find(s => s.name === name);
+      if (sc) { openUrl(sc.url); return { icon: "link", label: "已打开：" + sc.name }; }
+      return { icon: "warning", label: "未找到快捷方式：" + name };
+    }
+    if (cmd === "open-url") {
+      const u = normalizeUrl(parts.join(":"));
+      if (u) { openUrl(u); return { icon: "link", label: "已打开：" + u }; }
+      return { icon: "warning", label: "网址无效" };
+    }
     /* 未知命令：返回错误提示而不是静默失败 */
     return { icon: "warning", label: "未知命令：[" + cmd + "]" };
   } catch(e){ console.warn("cmd err", cmd, e); return { icon: "warning", label: "命令执行出错：" + cmd }; }
@@ -4178,7 +4211,9 @@ async function callModel(turn){
       "[set-clock:on 或 off]\n" +
       "[set-seconds:on 或 off]\n" +
       "[set-history:on 或 off]\n" +
-      "[set-history-count:数字1-15]\n\n" +
+      "[set-history-count:数字1-15]\n" +
+      "[open-shortcut:名称] 打开已有快捷方式\n" +
+      "[open-url:网址] 打开任意网站\n\n" +
       "示例（用户说\"换成深色主题\"）：\n好的，已切换到深色主题。\n[set-theme:night]\n\n" +
       "重要：命令必须单独一行放在回复最后。不要只说\"已切换\"却不输出命令。不要用反引号包裹命令。需要用户自己操作的用[button:文字:open-settings:ai]。回复要短。"
   }].concat(chatContext());
