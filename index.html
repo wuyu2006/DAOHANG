@@ -500,6 +500,9 @@ main{flex:1;width:100%;max-width:1240px;margin:0 auto;padding:8px 18px 30px}
 .chip{font-size:10.5px;padding:2px 10px;border-radius:999px;border:1.5px solid;font-weight:800;white-space:nowrap}
 .chip.on{color:var(--ok);border-color:#7fd6ab;background:#eefaf3}
 .chip.off{color:var(--danger);border-color:#e5a9b4;background:#fdf1f3}
+.balance-chip{font-size:11px;font-weight:700;padding:2px 10px;border-radius:999px;background:var(--panel);color:var(--text2);border:1.5px dashed var(--line)}
+.balance-chip.ok{color:var(--ok);border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.balance-chip.err{color:var(--danger);border-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent)}
 .badge{font-size:9.5px;padding:1px 8px;border-radius:999px;border:1.5px solid var(--line2);color:var(--text2);font-weight:800;letter-spacing:1px}
 
 /* 拖放上传区 */
@@ -992,6 +995,7 @@ input[type=range]:disabled{opacity:.45;pointer-events:none}
     </div>
     <div class="chat-title">
       <b id="chatModelName">尚未配置模型</b>
+      <span id="chatBalance" class="balance-chip" style="display:none"></span>
       <span id="chatStatus">前往设置配置 API 后开始对话</span>
     </div>
     <button class="icon-btn" id="chatSettingsBtn" title="API 设置" aria-label="API 设置">
@@ -3378,6 +3382,14 @@ function buildApiCard(profile){
   nm.textContent = profile.name;
   if (profile.local) { const bd = document.createElement("span"); bd.className = "badge"; bd.textContent = "本地"; nm.appendChild(bd); }
   if (state.activeApiId === profile.id) { const ch = document.createElement("span"); ch.className = "chip on"; ch.textContent = "使用中"; nm.appendChild(ch); }
+  if (!profile.local && /deepseek/i.test(profile.name) && profile.key) {
+    const bal = document.createElement("span");
+    bal.className = "chip balance-chip";
+    bal.dataset.apiId = profile.id;
+    bal.textContent = "余额查询中…";
+    nm.appendChild(bal);
+    fetchDeepSeekBalance(profile, bal);
+  }
   const spacer = document.createElement("div");
   spacer.className = "spacer";
   const useBtn = document.createElement("button");
@@ -3852,16 +3864,24 @@ const selChat = new Set();
 
 function updateChatHeader(){
   const a = activeApi();
-  const nameEl = $("#chatModelName"), st = $("#chatStatus"), dot = $("#chatDot");
+  const nameEl = $("#chatModelName"), st = $("#chatStatus"), dot = $("#chatDot"), bal = $("#chatBalance");
   if (!a) {
     nameEl.textContent = "尚未配置模型";
     st.textContent = "前往设置配置 API 后开始对话";
     dot.classList.add("off");
+    bal.style.display = "none";
     return;
   }
   nameEl.textContent = a.model ? a.name + " · " + a.model : a.name;
   if (!a.key && !a.local) { st.textContent = "缺少 API Key，请在设置中填写"; dot.classList.add("off"); }
   else { st.textContent = a.local ? "本地模型 · 已就绪" : "已就绪"; dot.classList.remove("off"); }
+  if (!a.local && /deepseek/i.test(a.name) && a.key) {
+    bal.style.display = "";
+    bal.textContent = "查询中…";
+    fetchDeepSeekBalance(a, bal);
+  } else {
+    bal.style.display = "none";
+  }
 }
 function updateChatHint(){
   const hint = $("#chatHint");
@@ -4030,6 +4050,34 @@ function autoResize(){
   const inp = $("#chatInput");
   inp.style.height = "auto";
   inp.style.height = Math.min(inp.scrollHeight, 130) + "px";
+}
+async function fetchDeepSeekBalance(profile, el){
+  if (!el) return;
+  const base = (profile.base || "https://api.deepseek.com").replace(/\/+$/, "");
+  try {
+    const res = await fetch(base + "/user/balance", {
+      headers: { "Authorization": "Bearer " + profile.key }
+    });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    const info = (data.balance_infos || [])[0];
+    if (info) {
+      el.textContent = info.currency + " " + (info.total_balance || "0");
+      el.classList.add("ok");
+    } else {
+      el.textContent = "余额未知";
+    }
+  } catch(e) {
+    el.textContent = "查询失败";
+    el.classList.add("err");
+  }
+}
+function refreshAllBalances(){
+  state.apis.forEach(p => {
+    if (p.local || !/deepseek/i.test(p.name) || !p.key) return;
+    const el = document.querySelector('.balance-chip[data-api-id="' + p.id + '"]');
+    if (el) fetchDeepSeekBalance(p, el);
+  });
 }
 async function sendChat(){
   if (chatBusy) return;
@@ -4297,6 +4345,8 @@ async function callModel(turn){
   chatAbort = null;
   $("#chatSend").classList.remove("busy");
   saveState();
+  /* 对话完成 5 秒后刷新余额 */
+  setTimeout(refreshAllBalances, 5000);
 }
 function toggleChat(force){
   const p = $("#chatPanel");
@@ -4676,6 +4726,8 @@ function init(){
   maybeWelcome();
   bindExtras();
   setInterval(updateClock, 1000);
+  setInterval(refreshAllBalances, 60000);
+  setTimeout(refreshAllBalances, 1500);
 }
 init();
 </script>
